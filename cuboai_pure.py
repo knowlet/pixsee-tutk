@@ -3275,6 +3275,24 @@ class TUTKDirectSession:
     # truncating it. Also bounds how far a junk [56:58] can drag the high-water.
     _MSG_GRACE = 2
 
+    _audio_is_adts = True
+
+    def _classify_av_unit(self, unit):
+        if unit[:4] == b'\x00\x00\x00\x01':
+            return 'video'
+        if len(unit) >= 2 and unit[0] == 0xFF and (unit[1] & 0xF6) == 0xF0:
+            return 'audio'
+        return None
+
+    def _prepare_av_unit(self, kind, unit, frameinfo, complete):
+        """Optional device-specific framing hook after AV reassembly.
+
+        The default preserves Cubo bytes and metadata. A device adapter may
+        return (unit, frameinfo), or None to discard an incomplete access unit.
+        Completeness belongs to this exact unit, not a racing session counter.
+        """
+        return unit, frameinfo
+
     def _av_reader(self, s, out_q, stop_evt):
         """Background thread: drain the socket, ACK continuously, reassemble access units.
 
@@ -3498,11 +3516,7 @@ class TUTKDirectSession:
             return bool(ks) and (ks[-1] - ks[0] + 1) == len(ks)
 
         def classify(b):
-            if b[:4] == b"\x00\x00\x00\x01":
-                return 'video'
-            if len(b) >= 2 and b[0] == 0xFF and (b[1] & 0xF6) == 0xF0:
-                return 'audio'
-            return None             # system/login frame — skip
+            return self._classify_av_unit(b)
 
         def emit(kind, unit, fi=None):
             # Part A: queue (kind, unit, frameinfo) so the parsed FRAMEINFO travels WITH its AU
@@ -3581,7 +3595,7 @@ class TUTKDirectSession:
             else:
                 self._stat_au_audio += 1
             _au_fi = None        # Part A: the parsed FRAMEINFO for THIS au (set below when stripped)
-            if kind == 'audio':
+            if kind == 'audio' and self._audio_is_adts:
                 fl = _adts_frame_len(unit)
                 # S91/Phase-3: surface the audio FRAMEINFO ts (gated CUBOAI_STRIP_FRAMEINFO, like
                 # video). A complete audio AU is [ADTS frame (fl)] + [24B trailer]; parse the trailer
@@ -3631,7 +3645,9 @@ class TUTKDirectSession:
                 self._stat_bytes_video += len(unit)
             else:
                 self._stat_bytes_audio += len(unit)
-            emit(kind, unit, _au_fi)
+            prepared = self._prepare_av_unit(kind, unit, _au_fi, comp)
+            if prepared is not None:
+                emit(kind, *prepared)
 
         try:
             while not stop_evt.is_set():
