@@ -50,8 +50,8 @@ python3 pixsee.py talk --camera-ip 192.168.0.7 --profile legacy --input message.
 本實作依相同格式傳送，限於信任的區域網路。對講回傳的 high-water 是
 攝影機看到的最高封包序號，不等同逐包完整交付或喇叭實際發聲。
 
-目前已實測影音接收、解碼、對講通道建立及傳輸回覆。喇叭實際播放仍待現場確認；
-測試音未在同時收回的音訊中辨識出來，不能據此宣稱已完成聲學驗收。
+目前已實測影音接收、解碼與對講。修正首個 global frame 編號後，
+使用者已在攝影機旁確認能清楚聽到「Hello」；此結果限於上述設備與韌體。
 掉包時會丟棄受損影格並等候完整關鍵影格，影像可能短暫停頓。
 
 詳見 [操作說明](docs/usage.md)、[協定分析與實測範圍](docs/protocol.md)、
@@ -64,7 +64,7 @@ python3 -m unittest discover -s tests -v
 python3 cuboai_messages.py
 ```
 
-本機 109 項測試通過。測試包含本機 OpenSSL DTLS 往返、錯誤 PSK、FFmpeg 轉碼、封包驗證、
+本機 111 項測試通過。測試包含本機 OpenSSL DTLS 往返、錯誤 PSK、FFmpeg 轉碼、封包驗證、
 對講重送／逾時／清理與 CLI。測試不會自動連線家中攝影機。
 DTLS 測試另需 `lsof` 確認本機測試伺服器已開始監聽；macOS 內建此工具。
 `cuboai_*.py` 為保留的上游支援模組；本專案支援的入口為 `pixsee.py` 和

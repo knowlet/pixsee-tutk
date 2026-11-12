@@ -1,7 +1,7 @@
 # 協定分析與實機驗證
 ## 音訊與對講增補（2026-11-12）
 
-本機 109 項測試通過；可安裝套件與獨立目錄中的 CLI 入口已驗證。
+本機 111 項測試通過；可安裝套件與獨立目錄中的 CLI 入口已驗證。
 結果摘要見 [validation-2026-11-12.json](validation-2026-11-12.json)。
 
 本階段新增 PCM 音訊接收、WAV／raw 輸出、AAC 影音封裝與檔案／stdin 對講。
@@ -10,12 +10,19 @@ H.264 為 1920×1088，AAC 為 8000 Hz mono。保留 90 kHz 時間基準進行
 全片解碼，warning/error 為 0 bytes。AAC PTS 相鄰差固定 11520 ticks／128 ms，
 沒有重疊；音訊與影像使用同一攝影機時間基準。這不證明無掉幀。
 
-對講通道建立成功，送出 100 個 PCM 影格並收到最高序號 99 的回覆，
-未觀察到待補片請求；同時收音也成功。ACK 的 D 是 high-water，能跨越缺洞，
-**不能以此推論全部送達或實體喇叭已播放**。測試音未在收回的音訊中辨識出來，
-目前沒有使用者現場確認，因此聲學播放狀態仍為「未確認」。唯讀音量查詢回報 3；
-未修改喇叭音量。原廠暫時切換麥克風狀態的流程也曾有限測試並恢復，
-未據此取得播放證據，所以正式 CLI 不引入這項設定切換。
+對講已通過使用者現場驗證：修正起始影格編號後，傳送同一段「Hello」音檔，
+使用者確認「有，清楚聽到了」。音檔為 PCM16、8000 Hz mono，含前後靜音共
+2.283 秒；送出 58 個影格，攝影機 high-water 為 58，沒有待補片請求。
+ACK 的 D 是 high-water，能跨越缺洞，**仍不能單靠 ACK 推論完整交付或實際發聲**；
+本次播放證據來自使用者聆聽。
+
+修正前，即使傳輸回覆正常，使用者兩次都聽不到 Hello；調高攝影機實體音量後仍無聲，
+原廠 App 則可正常對講。原因是 global frame 誤從 1 開始：原生接收端等待第 0 幀，
+阻擋後續音訊交付。將 global frame 改從 0 開始、audio frame 保持從 1 開始後，
+在同一設備與音檔上成功發聲。測試新增首幀及 32-bit counter rollover 回歸。
+
+程式未修改喇叭音量；使用者自行操作攝影機的實體音量鍵。較早的唯讀音量查詢值為 3，
+不是使用者調整後的讀值。正式 CLI 不需要切換麥克風設定，也未呼叫雲端 talk token API。
 
 ### 接收音訊
 
@@ -40,6 +47,8 @@ H.264 為 1920×1088，AAC 為 8000 Hz mono。保留 90 kHz 時間基準進行
 - PCM 640 bytes／40 ms，對應 App 的 `AudioSpeaker.CHUNK_SIZE`。
   compact audio subtype 3、AV flags 5、20-byte frame header，尾端為
   codec `0x008c`、flags 2、16-byte FRAMEINFO；原廠對講 timestamp 為 0。
+- compact packet offset 20 的 global frame 從 **0** 開始；offset 24 的 audio frame 從 **1** 開始。
+  重送保持兩個影格編號不變；傳輸序號可前進。
 - 以攝影機 SACK 缺片列表重送，有限緩衝、格式檢查與節流；結束送 `0x0351`＋8 zeros。
   沒有登入、沒有有效進度、來源停滯或攝影機停止回覆均會逾時並清理。
 - 尚未實作需要雲端 talk token 的 `0x0352` V2 認證流程。
@@ -48,10 +57,13 @@ Native 靜態位址：`avServStart3 0xfd90` → `avServStart2_inner 0xf3ea` →
 `serverConnect 0x1e1e8` → grant `0x125a8`，證明 service type 的傳遞。
 `_sendAVFrameFifo 0x13078`、`avPutDataToAVFrameFifo 0x13dbc` 對應音訊封裝。
 `0x123d6..0x12492` 顯示 high-water 與 missing FIFO 分開維護。
+初始化 `0x1ff4e/52` 將 global send/consumed 設為 `0xffffffff`，`0x13126/28`
+先加一，因此首幀是 0。`0x148e4` 將音訊移至共用排序佇列，`0x1452e..56`
+等待下一個 global frame；通過後 `0x1462a..70` 才將資料交付音訊佇列。
 
 本階段使用已取得的 LLVM Thumb 輸出、既有 REA evidence 與目標 JADX 輸出。
 新的 REA Hopper session 啟動失敗，沒有把補充分析冒充新的 REA Evidence；
-沒有執行原廠 ARM binary。後續聲學測試仍需在設備旁確認。
+沒有執行原廠 ARM binary。聲學結果由使用者在設備旁確認。
 
 以下保留初始純影像階段的紀錄；其中 57 tests／純影像 scope 為當時結果。
 

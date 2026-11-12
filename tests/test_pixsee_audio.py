@@ -93,7 +93,7 @@ class PixseeAudioTests(unittest.TestCase):
         packet = build_talk_audio(pcm, 7, 2)
         # 8-byte AV header + 20-byte native audio header + PCM + 16-byte info.
         self.assertEqual(packet.hex(),
-            "03050c00070000000301020001001000180000000300000003000000"
+            "03050c00070000000301020001001000180000000200000003000000"
             "01000200feffffff8c000200000000000000000000000000")
         self.assertEqual(parse_pcm_audio_unit(packet[28:])[0], pcm)
         self.assertEqual(TALK_CHUNK_BYTES, 640)
@@ -108,7 +108,28 @@ class PixseeAudioTests(unittest.TestCase):
         self.assertEqual(struct.unpack_from("<H", resent, 4)[0], 0)
         following = build_talk_audio(pcm, 65537, 65536)
         self.assertEqual(struct.unpack_from("<H", following, 10)[0], 0)
-        self.assertEqual(struct.unpack_from("<II", following, 20), (65537, 65537))
+        self.assertEqual(struct.unpack_from("<II", following, 20), (65536, 65537))
+
+    def test_first_global_frame_satisfies_native_receiver_start(self):
+        # Native init 0x1fdb4/0x1ff4e/0x1ff52 seeds global send/receive
+        # counters with -1. Send 0x13120 increments to 0, and receive
+        # 0x1452e..0x14556 waits for that exact first global frame. Audio
+        # counter starts zero and is incremented at 0x132bc..0x132c6.
+        packet = build_talk_audio(bytes(640), 0, 0)
+        self.assertEqual(packet[20:28], bytes.fromhex("0000000001000000"))
+        self.assertEqual(packet[8:20], bytes.fromhex("030100000100100090020000"))
+
+    def test_global_and_audio_frame_numbers_wrap_independently(self):
+        # Native 32-bit stores preserve the one-frame offset across rollover.
+        cases = (
+            (0xFFFFFFFE, "feffffffffffffff"),
+            (0xFFFFFFFF, "ffffffff00000000"),
+            (0x100000000, "0000000001000000"),
+        )
+        for frame, expected in cases:
+            with self.subTest(frame=frame):
+                packet = build_talk_audio(bytes(640), 0, frame)
+                self.assertEqual(packet[20:28], bytes.fromhex(expected))
 
     def test_talk_rejects_non_pcm_oversize_and_invalid_counters(self):
         for pcm in (b"", bytes(3), bytes(1010), "audio", bytearray(640)):

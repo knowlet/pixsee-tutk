@@ -151,9 +151,11 @@ def build_talk_audio(pcm: bytes, relseq: int, frame_number: int, *,
     1008 PCM bytes fit the native 1024-byte fragment; use 640-byte chunks at
     40 ms intervals to match AudioSpeaker. Native app talk timestamps are zero.
 
-    Counters are zero-based host counters; only their wire widths wrap. Audio
-    and global frame numbers start at one on the wire. Resends must reuse the
-    original frame_number while incrementing relseq.
+    Counters are zero-based host counters; only their wire widths wrap. The
+    global frame number starts at zero, while the audio frame number starts
+    at one. Native initialization (0x1ff4e) seeds the global counter with -1
+    before its first increment; the receiver waits for global frame zero.
+    Resends must reuse the original frame_number while incrementing relseq.
     """
     if (not isinstance(pcm, bytes) or not pcm or len(pcm) % PCM_SAMPLE_WIDTH
             or len(pcm) > TALK_MAX_PCM_BYTES):
@@ -172,7 +174,7 @@ def build_talk_audio(pcm: bytes, relseq: int, frame_number: int, *,
                      relseq & 0xFFFF, 0)
     struct.pack_into("<BBHHHHHII", packet, 8, 3, 1, frame_number & 0xFFFF,
                      1, PCM_FRAMEINFO_SIZE, len(payload), 0,
-                     (frame_number + 1) & 0xFFFFFFFF,
+                     frame_number & 0xFFFFFFFF,
                      (frame_number + 1) & 0xFFFFFFFF)
     packet[28:] = payload
     return bytes(packet)

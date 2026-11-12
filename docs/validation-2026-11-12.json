@@ -5,7 +5,7 @@
   "firmware_user_reported": "1.006.25",
   "sdk_observed": "4.3.8.1",
   "profile": "legacy",
-  "local_tests": 109,
+  "local_tests": 111,
   "video": {
     "capture_seconds": 20,
     "decoded_frames": 247,
@@ -23,7 +23,7 @@
   },
   "decode_warning_bytes": 0,
   "talk_cli": {
-    "camera_high_water_frames": 25,
+    "camera_high_water_frames": 58,
     "channels": 1,
     "codec": "pcm_s16le",
     "final_high_water_observed": true,
@@ -31,10 +31,20 @@
     "pending_missing_frames": 0,
     "resends": 0,
     "sample_rate": 8000,
-    "sent_frames": 25,
+    "sent_frames": 58,
     "talk_encrypted": false
   },
-  "speaker_playback": "not_confirmed",
-  "speaker_volume_readonly": 3,
-  "media_published": false
+  "speaker_playback": "confirmed_by_user",
+  "media_published": false,
+  "speaker_volume_readonly_before_user_adjustment": 3,
+  "speaker_test": {
+    "phrase": "Hello",
+    "input_seconds": 2.283,
+    "user_report": "heard_clearly",
+    "first_global_frame": 0,
+    "first_audio_frame": 1,
+    "volume_adjusted_by": "user_device_buttons",
+    "before_fix_user_report": "no_sound_on_two_attempts",
+    "official_app_user_report": "working"
+  }
 }
