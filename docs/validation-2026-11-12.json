@@ -1,0 +1,40 @@
+{
+  "date": "2026-11-12",
+  "timezone": "Asia/Taipei",
+  "app_version": "4.030.006",
+  "firmware_user_reported": "1.006.25",
+  "sdk_observed": "4.3.8.1",
+  "profile": "legacy",
+  "local_tests": 107,
+  "video": {
+    "capture_seconds": 20,
+    "decoded_frames": 247,
+    "codec": "h264",
+    "width": 1920,
+    "height": 1088
+  },
+  "audio": {
+    "aac_frames": 154,
+    "sample_rate": 8000,
+    "channels": 1,
+    "pts_delta_ticks": 11520,
+    "overlapping_aac_frames": 0,
+    "wav_samples": 30224
+  },
+  "decode_warning_bytes": 0,
+  "talk_cli": {
+    "camera_high_water_frames": 25,
+    "channels": 1,
+    "codec": "pcm_s16le",
+    "final_high_water_observed": true,
+    "ok": true,
+    "pending_missing_frames": 0,
+    "resends": 0,
+    "sample_rate": 8000,
+    "sent_frames": 25,
+    "talk_encrypted": false
+  },
+  "speaker_playback": "not_confirmed",
+  "speaker_volume_readonly": 3,
+  "media_published": false
+}
