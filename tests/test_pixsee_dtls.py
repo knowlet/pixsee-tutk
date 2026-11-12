@@ -1,4 +1,4 @@
-"""DTLS checks against a real independent OpenSSL s_server on loopback only."""
+"""Real loopback DTLS checks; lsof verifies the test server owns its UDP port."""
 
 import os
 from pathlib import Path
@@ -6,6 +6,7 @@ import select
 import shutil
 import socket
 import subprocess
+import sys
 import time
 import unittest
 
@@ -21,23 +22,69 @@ _TEST_KEY = bytes.fromhex("00112233445566778899aabbccddeeff")
 
 
 class LocalServer:
+    def __init__(self, *, launch_delay=0, startup_timeout=5):
+        self.launch_delay = launch_delay
+        self.startup_timeout = startup_timeout
+        self.process = self.socket = None
+
     def __enter__(self):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as reservation:
             reservation.bind(("127.0.0.1", 0))
             self.port = reservation.getsockname()[1]
-        self.process = subprocess.Popen([
+        command = [
             _OPENSSL, "s_server", "-dtls1_2", "-accept", f"127.0.0.1:{self.port}",
             "-nocert", "-psk_identity", _IDENTITY.decode("ascii"),
             "-psk", _TEST_KEY.hex(), "-cipher", DEFAULT_CIPHERS,
             "-quiet", "-naccept", "1",
-        ], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.socket.connect(("127.0.0.1", self.port))
-        self.socket.settimeout(0.05)
-        time.sleep(0.08)
-        if self.process.poll() is not None:
-            raise RuntimeError("Local OpenSSL DTLS server did not start")
-        return self
+        ]
+        if self.launch_delay:
+            # The regression delays the actual bind, not Popen's return. exec
+            # preserves the child PID so normal cleanup also covers the delay.
+            command = [sys.executable, "-c",
+                       "import os,sys,time; time.sleep(float(sys.argv[1])); "
+                       "os.execv(sys.argv[2], sys.argv[2:])",
+                       str(self.launch_delay), *command]
+        try:
+            self.process = subprocess.Popen(command, stdin=subprocess.PIPE,
+                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self._wait_until_listening()
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.socket.connect(("127.0.0.1", self.port))
+            self.socket.settimeout(0.05)
+            return self
+        except BaseException:
+            # A failing __enter__ does not get a matching context-manager exit.
+            self.close()
+            raise
+
+    def _wait_until_listening(self):
+        inspector = shutil.which("lsof")
+        if inspector is None:
+            raise RuntimeError("DTLS loopback tests require lsof to verify server readiness")
+        deadline = time.monotonic() + self.startup_timeout
+        while time.monotonic() < deadline:
+            if self.process.poll() is not None:
+                raise RuntimeError("Local OpenSSL DTLS server exited before listening")
+            # UDP connect cannot establish readiness, and a temporary bind
+            # probe could steal the port during OpenSSL startup. Inspect only
+            # this child instead, without occupying or sending to the port.
+            try:
+                inspected = subprocess.run(
+                    [inspector, "-nP", "-a", "-p", str(self.process.pid),
+                     f"-iUDP:{self.port}", "-Fpn"],
+                    capture_output=True, text=True,
+                    timeout=max(0.001, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                raise RuntimeError("Local OpenSSL DTLS server timed out before listening") from None
+            if inspected.returncode not in (0, 1):
+                raise RuntimeError("lsof failed to inspect the local DTLS server")
+            fields = inspected.stdout.splitlines()
+            if (f"p{self.process.pid}" in fields
+                    and f"n127.0.0.1:{self.port}" in fields
+                    and self.process.poll() is None):
+                return
+            time.sleep(min(0.01, max(0, deadline - time.monotonic())))
+        raise RuntimeError("Local OpenSSL DTLS server timed out before listening")
 
     def send(self, datagrams):
         for datagram in datagrams:
@@ -54,16 +101,23 @@ class LocalServer:
             self.send(client.feed_datagram(data))
         return predicate()
 
+    def close(self):
+        if self.socket is not None:
+            self.socket.close()
+        if self.process is not None:
+            if self.process.poll() is None:
+                self.process.terminate()
+            try:
+                self.process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=2)
+            for pipe in (self.process.stdin, self.process.stdout, self.process.stderr):
+                if pipe is not None:
+                    pipe.close()
+
     def __exit__(self, *_):
-        self.socket.close()
-        self.process.terminate()
-        try:
-            self.process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            self.process.kill()
-            self.process.wait(timeout=2)
-        for pipe in (self.process.stdin, self.process.stdout, self.process.stderr):
-            pipe.close()
+        self.close()
 
 
 class DtlsInputTests(unittest.TestCase):
@@ -79,6 +133,24 @@ class DtlsInputTests(unittest.TestCase):
 
 @unittest.skipUnless(_OPENSSL, "Installed OpenSSL executable is unavailable")
 class DtlsLoopbackTests(unittest.TestCase):
+    def test_delayed_server_bind_still_completes_real_dtls_handshake(self):
+        started = time.monotonic()
+        with LocalServer(launch_delay=0.25) as server, \
+                DtlsPskClient(_IDENTITY, _TEST_KEY) as client:
+            self.assertGreaterEqual(time.monotonic() - started, 0.25)
+            server.send(client.start())
+            self.assertTrue(server.pump(client, lambda: client.handshake_complete))
+
+    def test_startup_timeout_reaps_child_and_closes_pipes(self):
+        server = LocalServer(launch_delay=0.25, startup_timeout=0.05)
+        with self.assertRaisesRegex(RuntimeError, "before listening"):
+            server.__enter__()
+        self.assertIsNotNone(server.process.poll())
+        self.assertIsNone(server.socket)
+        self.assertTrue(all(pipe.closed for pipe in (
+            server.process.stdin, server.process.stdout, server.process.stderr)))
+        server.close()  # Cleanup remains idempotent after a failed entry.
+
     def test_handshake_bidirectional_binary_data_and_mtu(self):
         with LocalServer() as server, DtlsPskClient(_IDENTITY, _TEST_KEY, mtu=600) as client:
             hello = client.start()

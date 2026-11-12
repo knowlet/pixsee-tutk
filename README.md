@@ -64,7 +64,8 @@ python3 -m unittest discover -s tests -v
 python3 cuboai_messages.py
 ```
 
-本機 107 項測試通過。測試包含本機 OpenSSL DTLS 往返、錯誤 PSK、FFmpeg 轉碼、封包驗證、
+本機 109 項測試通過。測試包含本機 OpenSSL DTLS 往返、錯誤 PSK、FFmpeg 轉碼、封包驗證、
 對講重送／逾時／清理與 CLI。測試不會自動連線家中攝影機。
+DTLS 測試另需 `lsof` 確認本機測試伺服器已開始監聽；macOS 內建此工具。
 `cuboai_*.py` 為保留的上游支援模組；本專案支援的入口為 `pixsee.py` 和
 `PixseeSession` 的探索、影音接收及對講 API。

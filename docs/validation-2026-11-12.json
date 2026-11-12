@@ -5,7 +5,7 @@
   "firmware_user_reported": "1.006.25",
   "sdk_observed": "4.3.8.1",
   "profile": "legacy",
-  "local_tests": 107,
+  "local_tests": 109,
   "video": {
     "capture_seconds": 20,
     "decoded_frames": 247,
