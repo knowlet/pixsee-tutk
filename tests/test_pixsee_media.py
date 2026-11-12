@@ -2,6 +2,7 @@
 
 import io
 import math
+import os
 import shutil
 import struct
 import subprocess
@@ -11,10 +12,21 @@ import unittest
 from unittest.mock import patch
 import wave
 
-from pixsee_media import AACEncoder, MediaClock, PCMTimeline, pcm_input, validate_pcm
+from pixsee_media import AACEncoder, MediaClock, PCMTimeline, pcm_input, validate_pcm, _ffmpeg
 
 
 class PixseeMediaTests(unittest.TestCase):
+    def test_explicit_ffmpeg_path_is_used_and_invalid_override_has_no_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "selected ffmpeg"
+            executable.write_text("#!/bin/sh\nexit 0\n")
+            executable.chmod(0o700)
+            with patch.dict(os.environ, {"PIXSEE_FFMPEG": str(executable)}):
+                self.assertEqual(_ffmpeg(), str(executable))
+            with patch.dict(os.environ, {"PIXSEE_FFMPEG": str(executable) + ".missing"}):
+                with self.assertRaisesRegex(RuntimeError, "FFmpeg is required"):
+                    _ffmpeg()
+
     def test_clock_shares_camera_origin_and_handles_rollover(self):
         clock = MediaClock()
         self.assertEqual(clock.feed("video", {"timestamp_ms": 0xfffffff0}), 90000)

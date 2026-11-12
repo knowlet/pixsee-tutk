@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pixsee LAN discovery, authenticated streaming, audio recording and talk.
+"""Pixsee LAN discovery, streaming, audio, talk and an RTSP/ONVIF gateway.
 
 Examples (put options after the subcommand):
   python3 pixsee.py discover --camera-ip 192.168.0.7
@@ -56,6 +56,16 @@ def _ip(value):
     return str(address)
 
 
+def _port(value):
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("must be an integer port") from None
+    if not 1024 <= port <= 65535:
+        raise argparse.ArgumentTypeError("must be a port between 1024 and 65535")
+    return port
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description="Connect to your Pixsee camera over the LAN.")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -64,7 +74,8 @@ def build_parser():
     stream = commands.add_parser("stream", help="write MPEG-TS or raw H.264; optionally include audio")
     audio = commands.add_parser("audio", help="record camera audio as WAV or PCM16LE mono 8 kHz")
     talk = commands.add_parser("talk", help="play an audio input through the camera speaker")
-    for command in (discovery, probe, stream, audio, talk):
+    serve = commands.add_parser("serve", help="serve RTSP, ONVIF, snapshots and HLS through MediaMTX")
+    for command in (discovery, probe, stream, audio, talk, serve):
         command.add_argument("--camera-ip", type=_ip, default=os.environ.get("PIXSEE_CAMERA_IP"),
                              help="camera IPv4 address (or PIXSEE_CAMERA_IP)")
         command.add_argument("--timeout", type=_seconds,
@@ -72,7 +83,7 @@ def build_parser():
                              help="connection/discovery timeout in seconds (maximum 120)")
         command.add_argument("--verbose", action="store_true", help="write diagnostic messages to stderr")
     discovery.add_argument("--show-uid", action="store_true", help="include the full device UID in JSON")
-    for command in (probe, stream, audio, talk):
+    for command in (probe, stream, audio, talk, serve):
         command.add_argument("--profile", choices=("custom", "legacy", "current"),
                              help="choose one profile; default custom; overrides --firmware")
         command.add_argument("--firmware", help="suggest a profile using APK firmware rules; --profile wins")
@@ -95,6 +106,29 @@ def build_parser():
     talk.add_argument("--input", metavar="FILE", required=True, help="audio file, or - for stdin")
     talk.add_argument("--input-format", choices=("auto", "s16le"), default="auto",
                       help="auto uses FFmpeg; s16le accepts PCM16LE mono 8000 Hz directly")
+    serve.add_argument("--listen", choices=("127.0.0.1", "0.0.0.0"), default="127.0.0.1",
+                       help="listen locally or on the LAN (LAN requires viewer credentials)")
+    serve.add_argument("--advertise-ip", type=_ip,
+                       help="this computer's reachable LAN IPv4 address; required for LAN service")
+    serve.add_argument("--gateway-credentials", metavar="JSON",
+                       help="viewer username/password JSON, separate from camera credentials")
+    for option, default in (("rtsp", 8554), ("onvif", 8080), ("hls", 8888),
+                            ("rtp", 8000), ("rtcp", 8001), ("api", 9997)):
+        serve.add_argument(f"--{option}-port", type=_port, default=default,
+                           help=f"{option.upper()} port (default {default})")
+    serve.add_argument("--stream-name", default="pixsee", help="RTSP and HLS stream name")
+    serve.add_argument("--discovery", action="store_true", help="advertise ONVIF on the selected LAN interface")
+    serve.add_argument("--no-audio", action="store_true", help="publish video only")
+    serve.add_argument("--no-hls", action="store_true", help="disable the HLS endpoint")
+    serve.add_argument("--state-file", default=".pixsee-gateway-state.json",
+                       help="persistent bridge UUID and discovery restart counter")
+    serve.add_argument("--mediamtx", default="mediamtx", metavar="PATH", help="installed MediaMTX executable")
+    serve.add_argument("--ffmpeg", default="ffmpeg", metavar="PATH", help="installed FFmpeg executable")
+    serve.add_argument("--ffprobe", default="ffprobe", metavar="PATH", help="installed FFprobe executable")
+    serve.add_argument("--startup-timeout", type=_seconds, default=30.0,
+                       help="seconds allowed for the first playable stream (default 30)")
+    serve.add_argument("--media-timeout", type=_seconds, default=15.0,
+                       help="restart the producer after this many seconds without media (default 15)")
     return parser
 
 
@@ -356,6 +390,34 @@ def _run_talk(args, credentials):
     return 0
 
 
+def _run_serve(args, credentials):
+    from pixsee_gateway import GatewayConfig, load_viewer_credentials, run_gateway
+
+    username, password = load_viewer_credentials(args.gateway_credentials)
+    try:
+        config = GatewayConfig(
+            camera_ip=args.camera_ip, camera_credentials=credentials,
+            bind_host=args.listen, advertised_host=args.advertise_ip,
+            rtsp_port=args.rtsp_port, onvif_port=args.onvif_port,
+            hls_port=args.hls_port, rtp_port=args.rtp_port,
+            rtcp_port=args.rtcp_port, api_port=args.api_port,
+            stream_path=args.stream_name, username=username, password=password,
+            discovery=args.discovery, with_audio=not args.no_audio, hls=not args.no_hls,
+            mediamtx=args.mediamtx, ffmpeg=args.ffmpeg, ffprobe=args.ffprobe,
+            state_path=args.state_file, camera_timeout=args.timeout,
+            media_timeout=args.media_timeout, startup_timeout=args.startup_timeout,
+            duration=args.duration, openssl_library=args.openssl_library, verbose=args.verbose,
+        )
+        result = run_gateway(config, on_ready=lambda value: _json_result({"event": "ready", **value}))
+    except (OSError, ValueError, RuntimeError) as error:
+        message = str(error) or type(error).__name__
+        if password:
+            message = message.replace(password, "[redacted]")
+        raise RuntimeError(message) from None
+    _json_result({"event": "stopped", **result})
+    return 0
+
+
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -376,6 +438,8 @@ def main(argv=None):
             return _run_audio(args, credentials)
         if args.command == "talk":
             return _run_talk(args, credentials)
+        if args.command == "serve":
+            return _run_serve(args, credentials)
         return _run_stream(args, credentials)
     except KeyboardInterrupt:
         return 130

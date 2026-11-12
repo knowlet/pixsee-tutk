@@ -23,7 +23,7 @@ TALK_CHUNK_BYTES = 640
 
 
 def _ffmpeg():
-    executable = shutil.which("ffmpeg")
+    executable = shutil.which(os.environ.get("PIXSEE_FFMPEG", "ffmpeg"))
     if executable is None:
         raise RuntimeError("FFmpeg is required for combined audio/video or audio-file conversion")
     return executable

@@ -11,6 +11,8 @@ artifacts/
 .env.*
 .pixsee-credentials.json
 *credentials*.json
+.pixsee-gateway-state.json
+.pixsee-gateway-state.json.lock
 *.apk
 *.xapk
 *.so

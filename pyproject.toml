@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pixsee-tutk"
 version = "0.1.0"
-description = "Pixsee LAN video, audio and talk interoperability client"
+description = "Pixsee LAN video, audio, talk and RTSP/ONVIF gateway"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
@@ -21,5 +21,6 @@ Repository = "https://github.com/knowlet/pixsee-tutk"
 py-modules = [
   "pixsee", "pixsee_av", "pixsee_audio", "pixsee_config", "pixsee_dtls",
   "pixsee_media", "pixsee_protocol", "pixsee_session", "pixsee_talk",
+  "pixsee_gateway", "pixsee_onvif", "pixsee_discovery",
   "cuboai_pure", "cuboai_messages", "cuboai_pts", "cuboai_mpegts"
 ]

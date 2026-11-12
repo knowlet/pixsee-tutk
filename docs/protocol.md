@@ -1,7 +1,55 @@
 # 協定分析與實機驗證
+
+## RTSP／ONVIF 閘道增補（2026-11-12）
+
+`serve` 將既有 Pixsee 接收器接到 FFmpeg 與固定版本的 MediaMTX v1.21.3，
+由一條攝影機來源供多個讀取端使用。RTSP 轉送以 `-c:v copy` 保留 H.264，
+音訊則重新編碼為 AAC、24 kb/s、8000 Hz、mono；JPEG 快照另外擷取，HLS 使用 MPEG-TS 分段。
+來源的 PCM → AAC 編碼仍由原有影音流程負責，RTSP 發布端再做一次音訊編碼，
+建立 RTSP 標頭需要的 AAC codec configuration；不能將整條閘道流程稱為影音無損複製。
+依賴、啟動與產品接法見 [使用方式](usage.md#rtsp-onvif-gateway)，
+候選比較與固定來源見 [研究決策](research/protocol-gateway.md)。
+
+| 介面 | 實作範圍 |
+|---|---|
+| RTSP | TCP interleaved 與 UDP unicast；外部帳號僅有讀取權限 |
+| HLS／JPEG | 可選 HLS 播放清單；經驗證的 HTTP JPEG 快照，來源中斷時不回傳舊快照冒充成功 |
+| ONVIF Device | 時間、服務、能力、識別、scopes 與唯讀網路資訊 |
+| ONVIF Media1 | 實際影音 profile、來源／編碼設定查詢、串流與快照 URI |
+| ONVIF 驗證 | HTTP Digest 與 WS-Security UsernameToken PasswordDigest；時間／重送檢查 |
+| WS-Discovery | 選定 IPv4 介面的 Hello／Bye、Probe／Resolve 與對應回覆；Types／Scopes 比對、穩定 UUID 與重啟序號 |
+| 尚未提供 | Media2、PTZ、Imaging 設定、事件訂閱、動作偵測事件、編碼設定寫入、重啟、ONVIF／RTSP backchannel |
+
+ONVIF 回報閘道由 FFprobe 讀到的編碼與解析度；已知的攝影機原始影像為 1920×1088，
+不硬填為 1920×1080／30 fps。未確認的影格率、bitrate 或 GOP 不自行補成測量值。
+總媒體流量停滯時會將媒體狀態設為不可用，重連後重新查驗；只看到服務埠開啟不算串流健康。
+目前監控總流量，不能保證偵測「一條軌道停滯、另一條仍傳送」的部分故障。
+不支援的 SOAP 操作、未知 token 或傳輸設定會回傳 fault，沒有假裝成功變更攝影機。
+
+SOAP 使用 1.2；探索使用 WS-Addressing 2004/08 與 WS-Discovery 2005/04。
+這是供影音接入的唯讀 ONVIF 子集，**沒有宣稱完整 Profile S／T 相容或認證**。
+原有 `talk` CLI 的實機發聲證據不代表標準 ONVIF／RTSP 雙向對講已接通。
+
+已完成的分項測試包括 ONVIF 請求／回應與驗證，以及本機迴路 UDP 多播、
+Probe／Resolve 關聯、重送、QName／scope 比對、停止與連接埠釋放。
+合成媒體、實機閘道、獨立客戶端與產品 UI 屬不同驗證層級；不能由上述分項測試
+推論 Scrypted、Home Assistant、Frigate 或任一 NAS／NVR 已成功加入及錄影。
+目前未進行這些產品完整 UI 驗收，也未驗證其 HomeKit 或標準雙向對講流程。
+
+實機閘道已驗證 H.264 1920×1088、標稱 15 fps、AAC 8 kHz 單聲道：
+RTSP TCP／UDP 並行影音解碼、HLS 影音解碼與 Digest JPEG 快照均成功且無解碼警告。
+另外以 Scrypted 採用的 node-onvif 0.7.4 完成初始化、裝置資訊、profiles、串流與快照 URI 查詢。
+RTSP 缺少／錯誤觀看帳密均回傳 401，正確帳密回傳 200；實際 FFmpeg 發布請求遭 401 拒絕。
+停止後已確認六個影音／HTTP／內部 API 連接埠可重新綁定。
+這些結果限於本次設備及測試時段；詳見 [閘道驗證摘要](validation-gateway-2026-11-12.json)。
+
+完整 180 項本機測試通過、無跳過。合成影音測試使用真實 MediaMTX／FFmpeg，
+驗證並行讀取、強制中斷來源後的一次重連、恢復後重新解碼，以及所有程序與服務埠清理。
+保留的上游封包檢查、套件安裝與獨立目錄中的 `pixsee serve --help` 也已通過。
+
 ## 音訊與對講增補（2026-11-12）
 
-本機 111 項測試通過；可安裝套件與獨立目錄中的 CLI 入口已驗證。
+此音訊／對講階段的本機 111 項測試通過；可安裝套件與獨立目錄中的 CLI 入口已驗證。
 結果摘要見 [validation-2026-11-12.json](validation-2026-11-12.json)。
 
 本階段新增 PCM 音訊接收、WAV／raw 輸出、AAC 影音封裝與檔案／stdin 對講。

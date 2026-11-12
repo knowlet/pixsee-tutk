@@ -1,0 +1,83 @@
+{
+  "date": "2026-11-12",
+  "timezone": "Asia/Taipei",
+  "environment": {
+    "platform": "Darwin",
+    "architecture": "arm64",
+    "python": "3.15.2",
+    "mediamtx": "v1.21.3",
+    "ffmpeg": "ffmpeg version 9.0.2 Copyright (c) 2000-2026 the FFmpeg developers"
+  },
+  "camera_validation": {
+    "status": "passed",
+    "camera_profile": "legacy",
+    "metadata": {
+      "width": 1920,
+      "height": 1088,
+      "frame_rate": 15.0,
+      "video_encoding": "H264",
+      "video_bitrate": null,
+      "gop": null,
+      "h264_profile": null,
+      "audio_encoding": "AAC",
+      "audio_sample_rate": 8000,
+      "audio_channels": 1,
+      "audio_bitrate": 24
+    },
+    "h264_video": "stream copy",
+    "aac_audio": "re-encoded for RTSP AudioSpecificConfig",
+    "concurrent_rtsp_tcp_udp_video_audio_decode": "passed without warnings",
+    "hls_video_audio_decode": "passed without warnings",
+    "digest_snapshot_download_and_jpeg_decode": "passed without warnings",
+    "timestamp_sample": {
+      "seconds": 4,
+      "packets_by_stream": {
+        "0": 17,
+        "1": 32
+      },
+      "nonincreasing_pts_or_dts": 0
+    },
+    "rtsp_describe_http_status": {
+      "missing": 401,
+      "wrong": 401,
+      "correct": 200
+    },
+    "viewer_publish_ffmpeg_announce": "401 Unauthorized",
+    "shutdown": "gateway thread stopped and all 6 TCP/UDP service ports rebound successfully"
+  },
+  "independent_onvif_client": {
+    "package": "onvif",
+    "version": "0.7.4",
+    "used_by": "inspected Scrypted ONVIF plugin 0.1.31",
+    "status": "passed",
+    "operations": [
+      "GetSystemDateAndTime",
+      "GetServices",
+      "GetProfiles",
+      "GetVideoSources",
+      "GetDeviceInformation",
+      "GetStreamUri",
+      "GetSnapshotUri"
+    ],
+    "authentication": "WS-Security PasswordDigest",
+    "profile_count": 1,
+    "password_compatibility": "Use ASCII viewer passwords with this client; its Unicode digest is incompatible."
+  },
+  "acceptance_limits": [
+    "Scrypted application UI and HomeKit not run",
+    "Home Assistant, Frigate, NAS/NVR and VLC product UI acceptance not run",
+    "WS-Discovery is tested with actual loopback multicast; routed LAN/device discovery acceptance not run",
+    "Watchdog monitors aggregate ingress; a single stalled track may be masked by another active track",
+    "No ONVIF Profile S/T certification, events, PTZ, camera writes or RTSP/ONVIF backchannel"
+  ],
+  "automated_validation": {
+    "unittest": {
+      "passed": 180,
+      "skipped": 0,
+      "seconds": 44.354
+    },
+    "synthetic_media_integration": "real MediaMTX and FFmpeg TCP/UDP/HLS/JPEG; one forced producer restart with recovered decoded media and complete process/port cleanup",
+    "retained_upstream_messages": "passed",
+    "installed_cli_outside_checkout": "passed"
+  }
+}
