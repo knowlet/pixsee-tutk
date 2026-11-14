@@ -289,6 +289,27 @@ class OnvifContractTests(unittest.TestCase):
         for action in ("GetHostname", "GetScopes", "GetNetworkInterfaces", "GetNetworkProtocols"):
             self.assertEqual(self.call(action)[0], 200)
 
+    def test_network_interface_exposes_a_stable_hardware_address(self):
+        # Home Assistant reads interface.Info.HwAddress before it falls back to
+        # GetDeviceInformation.SerialNumber, so an empty Info aborts the flow
+        # with an AttributeError that surfaces as a generic "no ONVIF service".
+        status, root = self.call("GetNetworkInterfaces")
+        self.assertEqual(status, 200)
+        interface = root.find(".//d:NetworkInterfaces", NS)
+        self.assertIsNotNone(interface)
+        assert interface is not None
+        self.assertEqual(interface.findtext("t:Enabled", namespaces=NS), "true")
+        self.assertTrue(interface.findtext("t:Info/t:Name", namespaces=NS))
+        first = interface.findtext("t:Info/t:HwAddress", namespaces=NS)
+        self.assertIsNotNone(first)
+        assert first is not None
+        self.assertRegex(first, r"^([0-9A-F]{2}:){5}[0-9A-F]{2}$")
+        octets = [int(part, 16) for part in first.split(":")]
+        self.assertEqual(octets[0] & 0x01, 0, "HwAddress must be unicast")
+        self.assertEqual(octets[0] & 0x02, 0x02, "HwAddress must be locally administered")
+        self.assertEqual(self.call("GetNetworkInterfaces")[1].findtext(
+            ".//d:NetworkInterfaces/t:Info/t:HwAddress", namespaces=NS), first)
+
 
 class OnvifAuthenticationTests(unittest.TestCase):
     def setUp(self):
