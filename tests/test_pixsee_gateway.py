@@ -9,6 +9,7 @@ import stat
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -176,6 +177,52 @@ class GatewayTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 gateway._capture(command, timeout, max_bytes=limit)
 
+    def test_capture_deadline_survives_exited_leader_with_inherited_pipes(self):
+        owned = []
+        real_process = gateway._Process
+
+        class RecordedProcess(real_process):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                owned.append(self)
+
+        # The leader exits successfully while a separately grouped child keeps
+        # both pipes open. EOF and buffered-stream close must not extend the
+        # capture deadline or leave a diagnostic reader behind.
+        command = """import os, sys, time
+pid = os.fork()
+if pid:
+    with open(sys.argv[1], 'w') as handle:
+        handle.write(str(pid))
+    os._exit(0)
+os.setsid()
+time.sleep(8)
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            pid_path = Path(directory) / "inherited-pipe-holder.pid"
+            try:
+                started = time.monotonic()
+                with patch.object(gateway, "_Process", RecordedProcess):
+                    with self.assertRaisesRegex(RuntimeError, "time limit"):
+                        gateway._capture([sys.executable, "-c", command, str(pid_path)], 0.4)
+                self.assertLess(time.monotonic() - started, 2,
+                                "inherited pipes extended the capture/cleanup deadline")
+                self.assertTrue(pid_path.exists(), "pipe holder did not start")
+                self.assertEqual(len(owned), 1)
+                self.assertEqual(owned[0].process.returncode, 0)
+                self.assertTrue(owned[0].stopped)
+                self.assertFalse(owned[0].thread.is_alive())
+            finally:
+                # This deliberately escaped child belongs to the test, not the
+                # gateway group; never leave it behind after an assertion.
+                if pid_path.exists():
+                    try:
+                        os.kill(int(pid_path.read_text()), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                for child in owned:
+                    child.stop()
+
     def test_explicit_auth_rejection_recognized_without_diagnostic_retention(self):
         process = gateway._Process([sys.executable, "-c",
             "import sys; sys.stderr.write('Camera rejected the IOTC auth key (status 5) secret')"])
@@ -214,8 +261,10 @@ class GatewayTests(unittest.TestCase):
             with self.subTest(reaped=reaped, group=group_result):
                 owned = gateway._Process.__new__(gateway._Process)
                 owned.stopped = False
+                owned._drain_stop = threading.Event()
                 owned.process = Mock(pid=12345, returncode=None, stdout=None, stderr=None)
                 owned.thread = Mock()
+                owned.thread.is_alive.return_value = False
                 polls, signals = [], []
 
                 def poll():

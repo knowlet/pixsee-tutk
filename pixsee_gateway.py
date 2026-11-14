@@ -16,6 +16,7 @@ import math
 import os
 from pathlib import Path
 import re
+import select
 import shutil
 import signal
 import socket
@@ -236,20 +237,31 @@ class _Process:
     """Own an entire child group; drain diagnostics without retaining secrets."""
     def __init__(self, command, *, env=None, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL):
         self.auth_rejected = threading.Event()
+        self._drain_stop = threading.Event()
         self.stopped = False
         self.process = subprocess.Popen(command, stdin=stdin, stdout=stdout,
                                         stderr=subprocess.PIPE, env=env or _base_env(),
                                         start_new_session=True)
+        os.set_blocking(self.process.stderr.fileno(), False)
         self.thread = threading.Thread(target=self._drain, daemon=True)
         self.thread.start()
+
+    def _read_stderr_chunk(self):
+        return os.read(self.process.stderr.fileno(), 4096)
 
     def _drain(self):
         # Only retain a bounded window to recognize our producer's explicit
         # credential rejection. No raw diagnostic text is stored or surfaced.
         tail = b""
         try:
-            while True:
-                chunk = self.process.stderr.read1(4096)
+            while not self._drain_stop.is_set():
+                readable, _, _ = select.select([self.process.stderr], [], [], 0.1)
+                if not readable:
+                    continue
+                try:
+                    chunk = self._read_stderr_chunk()
+                except BlockingIOError:
+                    continue
                 if not chunk:
                     break
                 tail = (tail + chunk)[-8192:]
@@ -296,46 +308,54 @@ class _Process:
             except subprocess.TimeoutExpired:
                 continue
         self.process.wait(timeout=2)
+        # A descendant outside the original group can retain a pipe writer.
+        # Cancel raw reads before closing streams; buffered close can otherwise
+        # wait indefinitely for a reader holding its internal lock.
+        self._drain_stop.set()
+        self.thread.join(timeout=1)
+        if self.thread.is_alive():
+            raise RuntimeError("media diagnostic reader did not stop")
         for stream in (self.process.stdout, self.process.stderr):
             if stream is not None:
                 stream.close()
-        self.thread.join(timeout=1)
         self.stopped = True
 
 
 def _capture(command, timeout, max_bytes=1024 * 1024):
     child = _Process(command, stdout=subprocess.PIPE)
     output = bytearray()
-    overflow = threading.Event()
-
-    def read():
-        try:
-            while True:
-                part = child.process.stdout.read(65536)
-                if not part:
-                    return
-                if len(output) + len(part) > max_bytes:
-                    overflow.set()
-                    return
-                output.extend(part)
-        except (OSError, ValueError):
-            pass
-
-    reader = threading.Thread(target=read, daemon=True)
-    reader.start()
     deadline = time.monotonic() + timeout
     try:
-        while child.process.poll() is None:
-            if overflow.is_set() or time.monotonic() >= deadline:
+        descriptor = child.process.stdout.fileno()
+        os.set_blocking(descriptor, False)
+        eof = False
+        # The deadline covers pipe EOF as well as the group leader: an exited
+        # helper does not prove that all inherited output writers have closed.
+        while not eof or child.process.poll() is None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 raise RuntimeError("media helper exceeded its output or time limit")
-            time.sleep(0.03)
-        reader.join(timeout=1)
-        if child.process.returncode != 0 or overflow.is_set() or reader.is_alive():
+            if eof:
+                time.sleep(min(0.03, remaining))
+                continue
+            readable, _, _ = select.select([descriptor], [], [], min(0.03, remaining))
+            if not readable:
+                continue
+            try:
+                part = os.read(descriptor, 65536)
+            except BlockingIOError:
+                continue
+            if not part:
+                eof = True
+            elif len(output) + len(part) > max_bytes:
+                raise RuntimeError("media helper exceeded its output or time limit")
+            else:
+                output.extend(part)
+        if child.process.returncode != 0:
             raise RuntimeError("media helper did not complete successfully")
         return bytes(output)
     finally:
         child.stop()
-        reader.join(timeout=1)
 
 
 def probe_profile(config, ffprobe, *, timeout=None):

@@ -13,9 +13,11 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
+import traceback
 import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
@@ -76,6 +78,50 @@ def _synthetic_producer(ffmpeg):
             "-pix_fmt", "yuv420p", "-g", "10", "-keyint_min", "10", "-sc_threshold", "0",
             "-c:a", "aac", "-b:a", "24k", "-ar", "8000", "-ac", "1",
             "-f", "mpegts", "-flush_packets", "1", "pipe:1"]
+
+
+def _diagnostic_role(command, synthetic, backend):
+    if command == synthetic:
+        return "producer"
+    if command[0] == backend:
+        return "backend-version" if "--version" in command else (
+            "backend-validation" if "--validate-conf" in command else "backend")
+    if Path(command[0]).name.startswith("ffprobe"):
+        return "profile-probe"
+    return "snapshot" if "mjpeg" in command else "publisher"
+
+
+def _failure_diagnostics(phase, started, worker, owned, latest_api):
+    """Bound output and omit argv, environment, local variables and source text."""
+    children = list(owned)
+    active = [child for child in children if child.process.returncode is None]
+    selected = (active + [child for child in children[-8:] if child not in active])[:8]
+    data = {"phase": phase, "elapsed_seconds": round(time.monotonic() - started, 2),
+            "api": dict(latest_api), "threads": [], "children": []}
+    for child in selected:
+        # Popen.poll() can itself wait for an internal lock involved in a hang;
+        # returncode is the last observed status, not a fresh liveness claim.
+        data["children"].append({"role": child.role, "pid": child.process.pid,
+                                 "last_returncode": child.process.returncode,
+                                 "stderr_tail": child.stderr_tail.decode("utf-8", "replace")[-512:]})
+    frames = sys._current_frames()
+    wanted = {worker.ident, *(child.thread.ident for child in selected)}
+    for thread in threading.enumerate():
+        frame = frames.get(thread.ident)
+        if frame is None:
+            continue
+        stack = traceback.extract_stack(frame, limit=12)
+        if thread.ident not in wanted and not any(Path(item.filename).name == "pixsee_gateway.py" for item in stack):
+            continue
+        data["threads"].append({"name": thread.name,
+                                "stack": [f"{Path(item.filename).name}:{item.lineno}:{item.name}"
+                                          for item in stack[-8:]]})
+        if len(data["threads"]) >= 8:
+            break
+    text = json.dumps(data, ensure_ascii=True)
+    for secret in ("test-viewer-secret", "unused-test-only", "TESTONLY"):
+        text = text.replace(secret, "[redacted]")
+    return "Gateway failure diagnostics: " + text[:14000]
 
 
 @unittest.skipUnless(os.environ.get("PIXSEE_TEST_MEDIAMTX"),
@@ -152,18 +198,29 @@ class GatewayIntegrationTests(unittest.TestCase):
 
     def test_real_protocol_playback_recovery_and_complete_shutdown(self):
         owned, producers, messages, errors, results = [], [], [], [], []
+        started, latest_api = time.monotonic(), {}
+        phase, failure_diagnostic = "startup", None
         lock = threading.Lock()
         ready, stop = threading.Event(), threading.Event()
         synthetic = _synthetic_producer(self.ffmpeg)
         real_process = gateway._Process
+        real_api = gateway._api
+        backend = self.backend
 
         class RecordedProcess(real_process):
             def __init__(self, command, **kwargs):
+                self.role = _diagnostic_role(command, synthetic, backend)
+                self.stderr_tail = b""
                 super().__init__(command, **kwargs)
                 with lock:
                     owned.append(self)
                     if command == synthetic:
                         producers.append(self)
+
+            def _read_stderr_chunk(self):
+                chunk = super()._read_stderr_chunk()
+                self.stderr_tail = (self.stderr_tail + chunk)[-2048:]
+                return chunk
 
             def stop(self):
                 try:
@@ -172,6 +229,29 @@ class GatewayIntegrationTests(unittest.TestCase):
                     role = "synthetic producer" if self.process.args == synthetic else Path(self.process.args[0]).name
                     raise RuntimeError(f"owned {role} cleanup failed (pid={self.process.pid}, "
                                        f"returncode={self.process.poll()}, errno={error.errno})") from error
+
+        def recorded_api(config, endpoint):
+            try:
+                result = real_api(config, endpoint)
+            except Exception as error:
+                latest_api[endpoint] = {"at_seconds": round(time.monotonic() - started, 3),
+                                        "error": type(error).__name__,
+                                        "code": getattr(error, "code", None),
+                                        "errno": getattr(error, "errno", None)}
+                raise
+            state = {key: result.get(key) for key in ("online", "available", "inboundBytes") if key in result}
+            state["at_seconds"] = round(time.monotonic() - started, 3)
+            if "version" in result:
+                state["version"] = str(result["version"])[:80]
+            source = result.get("source")
+            if isinstance(source, dict):
+                state["source"] = {key: str(source[key])[:80] for key in ("type", "id") if key in source}
+            tracks = result.get("tracks2")
+            if isinstance(tracks, list):
+                state["tracks2"] = [{key: str(track[key])[:80] for key in ("id", "codec") if key in track}
+                                     for track in tracks[:4] if isinstance(track, dict)]
+            latest_api[endpoint] = state
+            return result
 
         def on_ready(message):
             messages.append(message)
@@ -200,7 +280,8 @@ class GatewayIntegrationTests(unittest.TestCase):
 
             worker = threading.Thread(target=run, name="pixsee-local-acceptance", daemon=True)
             with patch.object(gateway, "producer_command", return_value=synthetic), \
-                    patch.object(gateway, "_Process", RecordedProcess):
+                    patch.object(gateway, "_Process", RecordedProcess), \
+                    patch.object(gateway, "_api", new=recorded_api):
                 worker.start()
                 try:
                     self._wait(ready.is_set, worker, errors, 30, "waiting for actual media readiness")
@@ -218,16 +299,19 @@ class GatewayIntegrationTests(unittest.TestCase):
 
                     # Both clients open real sockets together, independently
                     # decode both tracks, and verify the resulting media frames.
+                    phase = "concurrent RTSP playback"
                     with ThreadPoolExecutor(max_workers=2) as executor:
                         futures = [executor.submit(self.decode, announced["rtsp_url"],
                                                    directory / f"{transport}.nut", transport)
                                    for transport in ("tcp", "udp")]
                         for future in futures:
                             future.result(timeout=self.budget(25))
+                    phase = "HLS playback"
                     self.decode(announced["hls_url"], directory / "hls.nut")
 
                     # Use Python's independent Digest client against the actual
                     # JPEG endpoint, then decode that JPEG with FFmpeg.
+                    phase = "authenticated snapshot"
                     opener = build_opener(ProxyHandler({}))
                     with self.assertRaises(HTTPError) as denied:
                         opener.open(announced["snapshot_url"], timeout=self.budget(5))
@@ -251,6 +335,7 @@ class GatewayIntegrationTests(unittest.TestCase):
                         self.assertEqual(len(producers), 1, "producer restarted before the deliberate failure")
                         original = producers[0]
                     # Kill only the synthetic process group that this test owns.
+                    phase = "producer recovery"
                     os.killpg(original.process.pid, signal.SIGKILL)
                     original.process.wait(timeout=self.budget(3))
 
@@ -280,13 +365,20 @@ class GatewayIntegrationTests(unittest.TestCase):
 
                     self._wait(recovered, worker, errors, 25, "waiting for a new publisher and fresh ONVIF profile")
                     self.decode(announced["rtsp_url"], directory / "recovered.nut", "tcp")
+                except Exception as error:
+                    failure_diagnostic = _failure_diagnostics(phase, started, worker, owned, latest_api)
+                    raise AssertionError(f"{type(error).__name__}: {error}\n{failure_diagnostic}") from error
                 finally:
                     stop.set()
                     worker.join(timeout=12)
+                    cleanup_diagnostic = (_failure_diagnostics("shutdown after " + phase, started, worker, owned, latest_api)
+                                          if worker.is_alive() else None)
                     # Even a gateway cleanup exception must leave no test-owned
                     # processes. Do not use broad process-name matching here.
                     with lock:
                         survivors = [child.process for child in owned if child.process.poll() is None]
+                    if survivors and cleanup_diagnostic is None:
+                        cleanup_diagnostic = _failure_diagnostics("surviving children", started, worker, owned, latest_api)
                     for process in survivors:
                         try:
                             os.killpg(process.pid, signal.SIGKILL)
@@ -295,8 +387,8 @@ class GatewayIntegrationTests(unittest.TestCase):
                         process.wait(timeout=3)
                     if worker.is_alive():
                         worker.join(timeout=3)
-                    self.assertFalse(worker.is_alive(), "gateway did not stop within its cleanup budget")
-                    self.assertFalse(survivors, "gateway cleanup left owned processes running")
+                    self.assertFalse(worker.is_alive(), "gateway did not stop within its cleanup budget\n" + (cleanup_diagnostic or ""))
+                    self.assertFalse(survivors, "gateway cleanup left owned processes running\n" + (cleanup_diagnostic or ""))
 
             if errors:
                 raise errors[0]
