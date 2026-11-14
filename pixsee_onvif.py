@@ -553,7 +553,11 @@ class OnvifServer:
 
     def _hardware_address(self):
         """Return a stable locally administered unicast MAC for this bridge."""
-        raw = bytearray(uuid.UUID(self.config.device_uuid.removeprefix("urn:uuid:")).bytes[:6])
+        device_id = uuid.UUID(self.config.device_uuid.removeprefix("urn:uuid:"))
+        # Include every UUID byte, not just a prefix that configured UUIDs may
+        # share. This is a 46-bit virtual identity, not a collision-free physical
+        # MAC allocation; local/unicast flags do not guarantee uniqueness.
+        raw = bytearray(hashlib.sha256(device_id.bytes).digest()[:6])
         raw[0] = (raw[0] | 0x02) & 0xFE
         return ":".join(f"{byte:02X}" for byte in raw)
 

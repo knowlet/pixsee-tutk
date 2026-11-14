@@ -310,6 +310,27 @@ class OnvifContractTests(unittest.TestCase):
         self.assertEqual(self.call("GetNetworkInterfaces")[1].findtext(
             ".//d:NetworkInterfaces/t:Info/t:HwAddress", namespaces=NS), first)
 
+    def test_network_interface_identity_uses_full_uuid_and_survives_restart(self):
+        def address(device_uuid):
+            with OnvifServer(replace(CONFIG, device_uuid=device_uuid),
+                             lambda: PROFILE, lambda: JPEG) as server:
+                status, _, body = request(server, soap("GetNetworkInterfaces"), DEVICE_PATH)
+                self.assertEqual(status, 200)
+                value = ET.fromstring(body).findtext(
+                    ".//d:NetworkInterfaces/t:Info/t:HwAddress", namespaces=NS)
+                self.assertRegex(value, r"^([0-9A-F]{2}:){5}[0-9A-F]{2}$")
+                self.assertEqual(int(value[:2], 16) & 0x03, 0x02)
+                return value
+
+        first = address(CONFIG.device_uuid)
+        # Same first six bytes, different tail: truncating UUID.bytes collides.
+        second_uuid = "03c7acb7-6847-4bf7-9eeb-89346ee67250"
+        second = address(second_uuid)
+        self.assertNotEqual(first, second)
+        self.assertEqual(address(CONFIG.device_uuid), first)
+        self.assertEqual(address(second_uuid), second)
+        self.assertEqual(address("urn:uuid:" + CONFIG.device_uuid.upper()), first)
+
 
 class OnvifAuthenticationTests(unittest.TestCase):
     def setUp(self):
@@ -468,7 +489,13 @@ class OnvifLifecycleTests(unittest.TestCase):
                 try:
                     client.sendall(prefix)
                     sender.start()
-                    self.assertEqual(client.recv(1024), b"")
+                    try:
+                        self.assertEqual(client.recv(1024), b"")
+                    except ConnectionResetError:
+                        # Closing with unread dripped input may produce RST on
+                        # macOS instead of EOF. Both mean the peer was closed;
+                        # socket.timeout and other errors must still fail.
+                        pass
                     self.assertLess(time.monotonic() - started, 0.8)
                 finally:
                     stopped.set()
