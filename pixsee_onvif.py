@@ -559,6 +559,16 @@ class OnvifServer:
     def __exit__(self, *args):
         self.close()
 
+    def _hardware_address(self):
+        """Return a stable locally administered unicast MAC for this bridge."""
+        device_id = uuid.UUID(self.config.device_uuid.removeprefix("urn:uuid:"))
+        # Include every UUID byte, not just a prefix that configured UUIDs may
+        # share. This is a 46-bit virtual identity, not a collision-free physical
+        # MAC allocation; local/unicast flags do not guarantee uniqueness.
+        raw = bytearray(hashlib.sha256(device_id.bytes).digest()[:6])
+        raw[0] = (raw[0] | 0x02) & 0xFE
+        return ":".join(f"{byte:02X}" for byte in raw)
+
     def _service_capabilities(self, namespace):
         result = ET.Element(f"{{{namespace}}}Capabilities")
         if namespace == MEDIA:
@@ -664,6 +674,13 @@ class OnvifServer:
         elif action == "GetNetworkInterfaces":
             interface = _add(result, DEVICE, "NetworkInterfaces", token="bridge")
             _tt(interface, "Enabled", "true")
+            info = _tt(interface, "Info")
+            _tt(info, "Name", "pixsee-bridge")
+            # ONVIF clients read Info.HwAddress as the device's stable identity;
+            # Home Assistant dereferences it before falling back to the serial
+            # number, so an empty Info makes the integration reject the bridge.
+            _tt(info, "HwAddress", self._hardware_address())
+            _tt(info, "MTU", 1500)
             ipv4 = _tt(interface, "IPv4")
             _tt(ipv4, "Enabled", "true")
             config = _tt(ipv4, "Config")

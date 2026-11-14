@@ -317,3 +317,14 @@ ffmpeg -v warning -i recording.ts -map 0:v:0 -map 0:a:0 \
 保留 90 kHz 時間基準，避免 FFmpeg 預設固定影格率輸出造成 DTS 四捨五入警告。
 解碼成功與無掉幀是不同條件：本程式會捨棄不完整 GOP，音訊遺失也可能形成間隙。
 實機驗證範圍與未確認項目見 [協定紀錄](protocol.md)。
+
+### ONVIF 虛擬硬體識別
+
+`GetNetworkInterfaces` 的 `HwAddress` 由完整裝置 UUID 的 SHA-256 前六個位元組
+派生，並設定為 locally administered unicast。相同 UUID（包含 URN／大小寫寫法）
+在重啟後維持相同識別；不同 bridge 應使用不同的持久化 UUID。
+這消除了只截取 UUID 前綴造成的系統性碰撞，但 46-bit 位址空間無法保證全球唯一，
+也未偵測其他主機使用的本地管理位址。若確認發生碰撞，請為其中一個 bridge
+重新產生並持久保存 UUID，再重新加入 ONVIF 客戶端。
+從最初的 UUID 前綴演算法更新到本版時，`HwAddress` 會改變；若已用舊版加入
+Home Assistant，可能需要移除舊整合並重新加入。這不是實體網卡 MAC 的變更。
