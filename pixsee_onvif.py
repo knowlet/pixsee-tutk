@@ -17,6 +17,7 @@ import math
 import re
 import secrets
 import socket
+from socketserver import TCPServer
 import threading
 import time
 from typing import Callable
@@ -324,6 +325,13 @@ class _BoundedHTTPServer(ThreadingHTTPServer):
         self.clients = set()
         self.clients_lock = threading.Lock()
         super().__init__(address, handler)
+
+    def server_bind(self):
+        # HTTPServer.server_bind performs an unbounded reverse DNS lookup.
+        # Our validated numeric listener address is already the server name.
+        TCPServer.server_bind(self)
+        self.server_name = self.config.bind_host
+        self.server_port = self.server_address[1]
 
     def get_request(self):
         client, address = super().get_request()

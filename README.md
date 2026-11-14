@@ -94,7 +94,7 @@ python3 -m unittest discover -s tests -v
 python3 cuboai_messages.py
 ```
 
-本機完整 181 項測試通過、無跳過，包含真實影音協議與斷線恢復測試。
+本機完整 182 項測試通過、無跳過，包含真實影音協議與斷線恢復測試。
 測試包含本機 OpenSSL DTLS 往返、錯誤 PSK、FFmpeg 轉碼、封包驗證、
 對講重送／逾時／清理、CLI、ONVIF 驗證與本機迴路的 WS-Discovery 多播。
 測試不會自動連線家中攝影機。分階段驗證紀錄見 [協定文件](docs/protocol.md)。

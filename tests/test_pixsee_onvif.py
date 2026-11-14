@@ -391,6 +391,18 @@ class OnvifLifecycleTests(unittest.TestCase):
         with self.assertRaises(OSError):
             socket.create_connection(("127.0.0.1", port), timeout=0.3)
 
+    def test_server_start_and_time_request_do_not_require_reverse_dns(self):
+        with patch("socket.getfqdn", side_effect=AssertionError("reverse DNS must not run")) as resolver:
+            with OnvifServer(CONFIG, lambda: PROFILE) as server:
+                self.assertEqual(server._http.server_name, CONFIG.bind_host)
+                self.assertEqual(server.port, server._http.socket.getsockname()[1])
+                status, _, body = request(server, soap("GetSystemDateAndTime"))
+                self.assertEqual(status, 200)
+                root = ET.fromstring(body)
+                self.assertEqual(root.findtext(".//t:UTCDateTime/t:Date/t:Year", namespaces=NS),
+                                 str(datetime.now(timezone.utc).year))
+            resolver.assert_not_called()
+
     def test_concurrent_clients_are_bounded_and_idle_connections_time_out(self):
         with OnvifServer(replace(CONFIG, max_clients=1, socket_timeout=0.2), lambda: PROFILE) as server:
             first = socket.create_connection(("127.0.0.1", server.port), timeout=2)
