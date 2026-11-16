@@ -15,7 +15,8 @@ import socket
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+from types import SimpleNamespace
 import xml.etree.ElementTree as ET
 
 from pixsee_onvif import MediaProfile, OnvifConfig, OnvifServer
@@ -54,6 +55,56 @@ def request(server, body=None, path=DEVICE_PATH, authorization=None, method="POS
         return response.status, dict(response.getheaders()), response.read()
     finally:
         connection.close()
+
+
+def assert_peer_closed(test, client):
+    # A deadline abort can send RST when a dripping peer leaves unread data.
+    # Timeout, other socket errors and application bytes are not closure evidence.
+    try:
+        data = client.recv(1024)
+    except ConnectionResetError:
+        return
+    test.assertEqual(data, b"")
+
+
+def assert_idle_slot(test, server, timeout=1):
+    # Peer EOF/RST precedes the request thread's finally block. Even an empty
+    # clients registry alone precedes semaphore release: check both states.
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with server._http.clients_lock:
+            if not server._http.clients and server._http.slots.acquire(blocking=False):
+                server._http.slots.release()
+                return
+        time.sleep(0.005)
+    test.fail("request cleanup did not release the client slot within its deadline")
+
+
+class LifecycleAssertionTests(unittest.TestCase):
+    def test_closed_peer_accepts_eof_and_reset_only(self):
+        assert_peer_closed(self, Mock(recv=Mock(return_value=b"")))
+        assert_peer_closed(self, Mock(recv=Mock(side_effect=ConnectionResetError())))
+        with self.assertRaises(AssertionError):
+            assert_peer_closed(self, Mock(recv=Mock(return_value=b"unexpected bytes")))
+        for error in [TimeoutError(), PermissionError()]:
+            with self.assertRaises(type(error)):
+                assert_peer_closed(self, Mock(recv=Mock(side_effect=error)))
+
+    def test_idle_slot_requires_registry_cleanup_and_a_released_permit(self):
+        state = SimpleNamespace(clients={object()}, clients_lock=threading.Lock(),
+                                slots=threading.BoundedSemaphore(1))
+        server = SimpleNamespace(_http=state)
+        with self.assertRaises(AssertionError):
+            assert_idle_slot(self, server, timeout=0.01)
+        state.clients.clear()
+        self.assertTrue(state.slots.acquire(blocking=False))
+        with self.assertRaises(AssertionError):
+            assert_idle_slot(self, server, timeout=0.01)
+        state.slots.release()
+        assert_idle_slot(self, server)
+        # The assertion must not consume the permit it probes.
+        self.assertTrue(state.slots.acquire(blocking=False))
+        state.slots.release()
 
 
 def digest(challenge, method="POST", path=DEVICE_PATH, password="bridge-secret",
@@ -417,7 +468,8 @@ class OnvifLifecycleTests(unittest.TestCase):
             second = socket.create_connection(("127.0.0.1", server.port), timeout=2)
             self.addCleanup(second.close)
             self.assertIn(b"503", second.recv(1024))
-            self.assertEqual(first.recv(1024), b"")
+            assert_peer_closed(self, first)
+            assert_idle_slot(self, server)
             self.assertEqual(request(server, soap("GetSystemDateAndTime"))[0], 200)
 
     def test_close_interrupts_idle_connections(self):
@@ -459,18 +511,13 @@ class OnvifLifecycleTests(unittest.TestCase):
                 try:
                     client.sendall(prefix)
                     sender.start()
-                    self.assertEqual(client.recv(1024), b"")
+                    assert_peer_closed(self, client)
                     self.assertLess(time.monotonic() - started, 0.8)
                 finally:
                     stopped.set()
                     client.close()
                     sender.join(timeout=1)
-                deadline = time.monotonic() + 1
-                while time.monotonic() < deadline:
-                    with server._http.clients_lock:
-                        if not server._http.clients:
-                            break
-                    time.sleep(0.005)
+                assert_idle_slot(self, server)
                 self.assertEqual(request(server, soap("GetSystemDateAndTime"))[0], 200)
 
     def test_completed_snapshot_request_outlives_header_deadline(self):
