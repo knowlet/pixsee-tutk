@@ -1,0 +1,9 @@
+# ONVIF deadline-test synchronization
+
+Baseline cb9168395ec7b473ea6ad7a28ac8cc26d5598327 and media-clock PR #2 have identical ONVIF production/tests. PR CI 43851577428 job133245188840 failed because the body-drip client's recv raised ConnectionResetError54 rather than returning EOF. Separate local idle-slot repetition reproduced a503 failure1/20. These are two distinct test assumptions, not a media-clock fix.
+
+RFC9293 section3.6.1 allows reset when closing with unread/pending data: https://www.rfc-editor.org/rfc/rfc9293.html#section-3.6.1 . A deadline abort of a continuously writing peer need not end gracefully. Only EOF and ConnectionResetError count as peer termination; timeout, application bytes and other errors still fail. The original0.8-second termination bound remains.
+
+CPython3.13 ThreadingMixIn.process_request_thread calls shutdown_request before returning to the subclass finally block: https://github.com/python/cpython/blob/v3.13.0/Lib/socketserver.py . The Pixsee subclass then removes the registered client and releases its semaphore. A deterministic baseline gate after shutdown_request proved EOF → request503 before finally, and request200 after permit release. Thus EOF (and even registry removal alone) is not proof of reusable capacity.
+
+Tests now require registry emptiness AND successful nonblocking permit acquisition/release within one second before the final200 request. They do not retry HTTP until200, sleep an arbitrary long delay, change server behavior, raise capacity/time limits or skip failures. Negative assertion tests reject a leaked permit, a live registry, timeout, unrelated errors and unexpected data. Upstream sources are design evidence only; no code copied. Local loopback and hosted platform coverage do not establish real-device ONVIF certification.
