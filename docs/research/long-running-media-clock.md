@@ -1,0 +1,7 @@
+# Continuous camera-clock unwrapping
+
+At cb9168395ec7b473ea6ad7a28ac8cc26d5598327, MediaClock computes a signed 32-bit timestamp difference from the initial camera sample. After 2^31 milliseconds (about 24.9 days of observed camera time), a forward timestamp becomes negative: video advances only by its clamp cadence and audio drops to the minimum PTS. Passing those audio timestamps to PCMTimeline discards subsequent PCM as overlap. The regression reproduces this without waiting or using a camera.
+
+Use the same modular signed difference between adjacent valid observations, accumulating it in a Python integer. Keep the single shared audio/video epoch, backward interleaving/jitter, existing invalid timestamp fallback, video clamp and 33-bit MPEG output behavior. As with any serial-number unwrapping, adjacent observations must differ by less than half a period; an unobserved 24.9-day gap or camera reset is not resolved by this change.
+
+Arithmetic reference: RFC 1982 sections 3–4 https://www.rfc-editor.org/rfc/rfc1982.html ; finite-width comparisons cannot determine arbitrary distance from a fixed old origin. No external implementation or dependency copied. Tests simulate several full wraps, interleaved audio/video, jitter and the actual MediaClock-to-PCMTimeline path, with every source PCM sample preserved. Existing FFmpeg tests cover conversion separately; this is not a multi-day device soak or live camera acceptance.
