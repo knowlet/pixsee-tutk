@@ -47,6 +47,8 @@ class MediaClock:
 
     def __init__(self):
         self.origin = None
+        self.last_timestamp = None
+        self.elapsed_ms = 0
         self.arrival_origin = time.monotonic()
         self.previous = {}
 
@@ -56,8 +58,13 @@ class MediaClock:
         if valid_timestamp:
             if self.origin is None:
                 self.origin = timestamp
-            delta = ((timestamp - self.origin + 0x80000000) & 0xffffffff) - 0x80000000
-            pts = 90000 + delta * 90
+            if self.last_timestamp is not None:
+                # Unwrap adjacent observations, not distance from the original
+                # timestamp: that distance becomes ambiguous after 24.9 days.
+                delta = ((timestamp - self.last_timestamp + 0x80000000) & 0xffffffff) - 0x80000000
+                self.elapsed_ms += delta
+            self.last_timestamp = timestamp
+            pts = 90000 + self.elapsed_ms * 90
         else:
             pts = round(90000 + (time.monotonic() - self.arrival_origin) * 90000)
         previous = self.previous.get(kind)

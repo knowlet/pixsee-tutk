@@ -36,6 +36,39 @@ class PixseeMediaTests(unittest.TestCase):
         # invent a forward step that the next real timestamp then reverses.
         self.assertEqual(clock.feed("audio", {"timestamp_ms": 0x10}, 512), 90000 + 32 * 90)
 
+    def test_clock_unwraps_multiple_full_camera_periods(self):
+        clock = MediaClock()
+        # Adjacent observations remain less than half a 32-bit millisecond period apart.
+        for elapsed in range(0, 3 * (1 << 32), 1 << 30):
+            self.assertEqual(clock.feed("video", {"timestamp_ms": elapsed & 0xffffffff}),
+                             90000 + elapsed * 90)
+
+    def test_clock_preserves_interleaved_tracks_and_jitter_after_half_period(self):
+        clock = MediaClock()
+        for timestamp in [0, 1 << 30, (1 << 31) - 32]:
+            clock.feed("video", {"timestamp_ms": timestamp})
+        for kind, timestamp in [("audio", (1 << 31) + 32),
+                                ("video", (1 << 31) + 64),
+                                ("audio", (1 << 31) + 16),
+                                ("audio", (1 << 31) + 96)]:
+            self.assertEqual(clock.feed(kind, {"timestamp_ms": timestamp}, 512),
+                             90000 + timestamp * 90)
+
+    def test_audio_timeline_keeps_pcm_across_long_running_half_period(self):
+        clock = MediaClock()
+        for timestamp in [0, 1 << 30, (1 << 31) - 256]:
+            clock.feed("video", {"timestamp_ms": timestamp})
+        timeline = PCMTimeline()
+        blocks = [struct.pack("<h", index + 1) * 512 for index in range(12)]
+        output = []
+        for index, block in enumerate(blocks):
+            timestamp = (1 << 31) - 128 + index * 64
+            pts = clock.feed("audio", {"timestamp_ms": timestamp}, 512)
+            output.extend(timeline.feed(block, pts))
+        output.extend(timeline.finish())
+        self.assertEqual(b"".join(block for block, _ in output), b"".join(blocks))
+        self.assertEqual((timeline.inserted_samples, timeline.trimmed_samples), (0, 0))
+
     def test_pcm_clock_preserves_every_sample_through_timestamp_jitter(self):
         clock = PCMTimeline()
         blocks = [struct.pack("<h", index + 1) * 512 for index in range(14)]
